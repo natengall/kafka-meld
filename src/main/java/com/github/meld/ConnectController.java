@@ -1,5 +1,6 @@
 package com.github.meld;
 
+import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -7,9 +8,12 @@ import java.text.Collator;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import javax.ws.rs.GET;
 import javax.ws.rs.PUT;
@@ -33,6 +37,11 @@ import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.kstream.ForeachAction;
 import org.apache.kafka.streams.kstream.KStream;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 @Path("connect")
 @Produces(MediaType.APPLICATION_JSON)
@@ -139,7 +148,7 @@ public class ConnectController {
 
     @GET
     @Path("/{cluster}/{connector}/offset")
-    public Response getOffset(@PathParam("cluster") String cluster, @PathParam("connector") String connector)
+    public Response getOffsets(@PathParam("cluster") String cluster, @PathParam("connector") String connector)
             throws IOException {
         return Response
                 .ok(offsets.get(cluster).entrySet().stream().filter(s -> s.getKey().contains(connector)).collect(
@@ -186,6 +195,31 @@ public class ConnectController {
         sendPostRequest(prop.getProperty(cluster + ".url") + "/connectors/" + connector + "/tasks/0/restart");
         return Response.ok().build();
 
+    }
+
+    @GET
+    @Path("/{cluster}/export")
+    public Response getExport(@PathParam("cluster") String cluster) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ZipOutputStream zos = new ZipOutputStream(baos);
+        for (Entry<String, String> e : configs.get(cluster).entrySet()) {
+            if (e.getKey().startsWith("connector-") && e.getValue() != null) {
+                ZipEntry entry = new ZipEntry(e.getKey().substring(10) + ".json");
+                zos.putNextEntry(entry);
+                ObjectMapper sortedMapper = new ObjectMapper().configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY,
+                        true);
+                JsonNode json = new ObjectMapper().readTree(e.getValue().substring(14, e.getValue().length() - 1));
+                ObjectNode obj = (ObjectNode) json;
+                obj.remove("name");
+                zos.write(sortedMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(obj));
+                zos.closeEntry();
+            }
+        }
+        zos.close();
+        baos.close();
+
+        return Response.ok(baos.toByteArray()).type("application/zip")
+                .header("Content-Disposition", "attachment; filename=\"" + cluster + ".zip\"").build();
     }
 
     private Response sendPostRequest(String url) throws IOException {

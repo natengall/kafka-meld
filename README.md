@@ -74,3 +74,26 @@ $ curl localhost:9000/connect/connectc1/connector1/offset/table1
 $ curl --request PUT localhost:9000/connect/connectc1/connector1/offset/table1/684046000
 ```
 This request effectively brings up a producer client to write to the internal offset topic used by the connectc1 cluster and subsequently triggering a restart of that task to force that offset to apply.
+
+### Exporting connector properties
+
+Appending `/export` to the cluster name in the URL results in a zip file with all of the connectors currently on that Kafka Connect cluster.
+
+```
+$ curl localhost:9000/connect/connectc1/export > connectc1.zip
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100 11844    0 11844    0     0   246k      0 --:--:-- --:--:-- --:--:--  373k
+
+$ unzip connectc1.zip -d connectc1
+Archive:  connectc1.zip
+  inflating: connector1.json
+  inflating: connector2.json
+  inflating: connector3.json
+
+$ cat connectc1/connector1.json
+{
+  "connector.class" : "io.confluent.connect.jdbc.JdbcSourceConnector",
+  ...
+}
+```
