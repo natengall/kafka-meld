@@ -21,6 +21,20 @@
 	</properties>
 
 	<dependencies>
+	<!-- https://mvnrepository.com/artifact/com.github.seratch/jslack -->
+<dependency>
+    <groupId>com.github.seratch</groupId>
+    <artifactId>jslack</artifactId>
+    <version>3.1.4</version>
+</dependency>
+	<!-- https://mvnrepository.com/artifact/org.apache.kafka/kafka -->
+<dependency>
+    <groupId>org.apache.kafka</groupId>
+    <artifactId>kafka_2.12</artifactId>
+    <version>2.3.1</version>
+</dependency>
+	
+	
 		<dependency>
 			<groupId>io.dropwizard</groupId>
 			<artifactId>dropwizard-core</artifactId>
@@ -41,6 +55,20 @@
 			<artifactId>kafka-streams</artifactId>
 			<version>2.1.0</version>
 		</dependency>
+		<!-- Swagger UI -->
+        <dependency>
+            <groupId>com.wordnik</groupId>
+            <artifactId>swagger-jaxrs_2.10</artifactId>
+            <version>1.3.12</version>
+        </dependency>
+ 
+        <!-- CORS support for Swagger-->
+        <dependency>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>jetty-servlets</artifactId>
+            <version>9.2.9.v20150224</version>
+        </dependency>
+        
 	</dependencies>
 
 	<build>

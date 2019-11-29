@@ -5,11 +5,14 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.text.Collator;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
@@ -25,6 +28,9 @@ import org.apache.kafka.clients.admin.CreateTopicsOptions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.RecordsToDelete;
 import org.apache.kafka.common.TopicPartition;
+
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Path("kafka")
 @Produces(MediaType.APPLICATION_JSON)
@@ -82,6 +88,28 @@ public class KafkaController {
         return Response.ok(consumerGroupList).build();
     }
 
+    @GET
+    @Path("/{cluster}/consumers/{group}")
+    public Response getConsumerGroupOffsets(@PathParam("cluster") String cluster, @PathParam("group") String group)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        ObjectMapper sortedMapper = new ObjectMapper().configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
+        return Response.ok(adminClients.get(cluster).listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
+                .get(5, TimeUnit.SECONDS).entrySet().stream()
+                .map(e -> sortedMapper.createObjectNode().put(e.getKey().toString(), e.getValue().offset()))
+                ).build();
+    }
+
+    @GET
+    @Path("/{cluster}/consumers/{group}/{topicPartition}")
+    public Response getConsumerGroupOffsetsTopicPartition(@PathParam("cluster") String cluster, @PathParam("group") String group, @PathParam("topicPartition") String topicPartition)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        ObjectMapper sortedMapper = new ObjectMapper().configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
+        return Response.ok(adminClients.get(cluster).listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
+                .get(5, TimeUnit.SECONDS).entrySet().stream().filter(e -> {return e.getKey().toString().startsWith(topicPartition);})
+                .map(e -> sortedMapper.createObjectNode().put(e.getKey().toString(), e.getValue().offset()))
+                ).build();
+    }
+    
     @GET
     @Path("/{cluster}/clusterId")
     public Response getClusterId(@PathParam("cluster") String cluster) throws InterruptedException, ExecutionException {

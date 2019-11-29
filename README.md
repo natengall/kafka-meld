@@ -3,6 +3,7 @@ Meld is a REST API that integrates with Kafka and Kafka Connect clusters in orde
 
 Some of the tasks that Meld helps assist with today include:
 - managing Kafka Connect source connector offsets
+- exporting all connector properties from a Kafka Connect cluster
 
 ## Getting started
 Meld contains two configuration files that users will need to configure before starting up the application. They are `kafka.properties` and `connect.properties`.
