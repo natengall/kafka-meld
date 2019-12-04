@@ -27,7 +27,7 @@ public class MeldApplication extends Application<MeldConfiguration> {
         environment.jersey().register(new IndexController());
         environment.jersey().register(new ConnectController());
         environment.jersey().register(new KafkaController());
-        environment.jersey().register(new SlackReporter());
+        //environment.jersey().register(new SlackReporter());
     }
 
     public static void main(String[] args) throws Exception {

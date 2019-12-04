@@ -4,17 +4,26 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.text.Collator;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
+import javax.ws.rs.DELETE;
 import javax.ws.rs.GET;
+import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
@@ -27,8 +36,16 @@ import org.apache.kafka.clients.admin.ConsumerGroupListing;
 import org.apache.kafka.clients.admin.CreateTopicsOptions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.RecordsToDelete;
+import org.apache.kafka.clients.consumer.CommitFailedException;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.LongDeserializer;
+import org.apache.kafka.common.serialization.StringDeserializer;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -100,16 +117,84 @@ public class KafkaController {
     }
 
     @GET
-    @Path("/{cluster}/consumers/{group}/{topicPartition}")
-    public Response getConsumerGroupOffsetsTopicPartition(@PathParam("cluster") String cluster, @PathParam("group") String group, @PathParam("topicPartition") String topicPartition)
+    @Path("/{cluster}/consumersz/{group}")
+    public Response getPrefixConsumerGroupOffsets(@PathParam("cluster") String cluster, @PathParam("group") String group)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        HashMap<String, HashMap<String, Long>> offsetsz = new HashMap<String, HashMap<String, Long>>(); 
+        List<String> matchingConsumerGroups = adminClients.get(cluster).listConsumerGroups().all().get().stream().filter(x -> {return x.groupId().startsWith(group);}).map(y -> {return y.groupId();}).collect(Collectors.toList());
+        for(String matchingConsumerGroup : matchingConsumerGroups) {
+            offsetsz.put(matchingConsumerGroup, new HashMap<String, Long>());
+            
+            for(Entry<TopicPartition,OffsetAndMetadata> entry : adminClients.get(cluster).listConsumerGroupOffsets(matchingConsumerGroup).partitionsToOffsetAndMetadata().get().entrySet()) {
+                offsetsz.get(matchingConsumerGroup).put(entry.getKey().toString(), entry.getValue().offset());
+            }
+        }
+        return Response.ok(offsetsz).build();
+    }
+
+    @DELETE
+    @Path("/{cluster}/consumersz/{group}")
+    public Response deleteConsumerGroupOffsets(@PathParam("cluster") String cluster, @PathParam("group") String group)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        
+        List<String> a = adminClients.get(cluster).listConsumerGroups().all().get().stream().filter(x -> {return x.groupId().startsWith(group);}).map(y -> {return y.groupId();}).collect(Collectors.toList());
+        HashMap<String, List<String>> hm = new HashMap<String,  List<String>>();
+        adminClients.get(cluster).deleteConsumerGroups(a);
+        return Response.ok(a).build();
+    }
+
+    @GET
+    @Path("/{cluster}/consumers/{group}/{topic}")
+    public Response getConsumerGroupOffsetsForTopic(@PathParam("cluster") String cluster, @PathParam("group") String group, @PathParam("topic") String topic)
             throws InterruptedException, ExecutionException, TimeoutException {
         ObjectMapper sortedMapper = new ObjectMapper().configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
         return Response.ok(adminClients.get(cluster).listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
-                .get(5, TimeUnit.SECONDS).entrySet().stream().filter(e -> {return e.getKey().toString().startsWith(topicPartition);})
+                .get(5, TimeUnit.SECONDS).entrySet().stream().filter(e -> {return e.getKey().toString().startsWith(topic);})
                 .map(e -> sortedMapper.createObjectNode().put(e.getKey().toString(), e.getValue().offset()))
                 ).build();
     }
-    
+
+    @GET
+    @Path("/{cluster}/consumers/{group}/{topic}/{partition}")
+    public Response getConsumerGroupOffsetsForTopicPartition(@PathParam("cluster") String cluster, @PathParam("group") String group, @PathParam("topic") String topic, @PathParam("partition") String partition)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        ObjectMapper sortedMapper = new ObjectMapper().configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
+        return Response.ok(adminClients.get(cluster).listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
+                .get(5, TimeUnit.SECONDS).entrySet().stream().filter(e -> {return e.getKey().toString().startsWith(topic) && e.getKey().partition() == Integer.parseInt(partition);})
+                .map(e -> sortedMapper.createObjectNode().put(e.getKey().toString(), e.getValue().offset()))
+                ).build();
+    }
+
+    @DELETE
+    @Path("/{cluster}/consumers/{group}")
+    public Response deleteConsumerGroupOffsetsTopicPartition(@PathParam("cluster") String cluster, @PathParam("group") String group) {
+        return Response.ok(
+            adminClients.get(cluster).deleteConsumerGroups(Collections.singletonList(group))
+        ).build();
+    }
+
+    @PUT
+    @Path("/{cluster}/consumers/{group}/{topic}/{partition}/{offset}")
+    public Response updateConsumerGroupOffsetsTopicPartition(@PathParam("cluster") String cluster, @PathParam("group") String group, 
+            @PathParam("topic") String topic, @PathParam("partition") String partition, @PathParam("offset") String offset) {
+        final Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, prop.get(cluster + ".bootstrap_servers"));
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, group);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<byte[], byte[]>(props);
+        consumer.assign(Collections.singletonList(new TopicPartition(topic, Integer.parseInt(partition))));
+        consumer.seek(new TopicPartition(topic, Integer.parseInt(partition)), Long.parseLong(offset));
+        try {
+            consumer.commitSync();
+            consumer.close();
+            return Response.ok("[" + group + "] is now at offset [" + offset + "]" + " for [" + topic + "-" + partition + "]").build();
+        } catch (CommitFailedException cfe) {
+            consumer.close();
+            return Response.ok("Could not reset offset because another consumer client is still reading from this topic partition.").build();
+        }
+    }
+
     @GET
     @Path("/{cluster}/clusterId")
     public Response getClusterId(@PathParam("cluster") String cluster) throws InterruptedException, ExecutionException {
@@ -130,6 +215,7 @@ public class KafkaController {
         return Response.ok(kafkaTopicActions).build();
     }
 
+    @SuppressWarnings("serial")
     @GET
     @Path("/{cluster}/topics/{topic}/purge")
     public Response purge(@PathParam("cluster") String cluster, @PathParam("topic") String topic)

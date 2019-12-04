@@ -4,15 +4,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.StringWriter;
-import java.net.MalformedURLException;
 import java.text.Collator;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map.Entry;
 import java.util.Properties;
-import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -32,7 +30,6 @@ import javax.ws.rs.client.WebTarget;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -58,9 +55,13 @@ import com.wordnik.swagger.annotations.Api;
 public class ConnectController {
 
     LinkedList<String> connectClusters = new LinkedList<String>();
-    private HashMap<String, HashMap<String, String>> offsets = new HashMap<String, HashMap<String, String>>();
-    private HashMap<String, HashMap<String, String>> configs = new HashMap<String, HashMap<String, String>>();
-    private HashMap<String, HashMap<String, HashMap<String, String>>> statuses = new HashMap<String, HashMap<String, HashMap<String, String>>>();
+    private HashMap<String, HashMap<String, String>> offsetsMap = new HashMap<String, HashMap<String, String>>();
+    private HashMap<String, HashMap<String, String>> configsMap = new HashMap<String, HashMap<String, String>>();
+    private HashMap<String, HashMap<String, HashMap<String, String>>> statusesMap = new HashMap<String, HashMap<String, HashMap<String, String>>>();
+
+    //TEMP
+    private HashMap<String, HashMap<String, HashMap<String, HashMap<String, HashMap<String, String>>>>> clusterToServerToDatabaseToConnector = new HashMap<String, HashMap<String, HashMap<String, HashMap<String, HashMap<String, String>>>>>();
+    // --temp
 
     Properties prop = new Properties();
 
@@ -83,13 +84,12 @@ public class ConnectController {
         });
 
         for (String connectCluster : connectClusters) {
-            offsets.put(connectCluster, new HashMap<String, String>());
-            configs.put(connectCluster, new HashMap<String, String>());
-            statuses.put(connectCluster, new HashMap<String, HashMap<String, String>>());
+            offsetsMap.put(connectCluster, new HashMap<String, String>());
+            configsMap.put(connectCluster, new HashMap<String, String>());
+            statusesMap.put(connectCluster, new HashMap<String, HashMap<String, String>>());
 
             Properties config = new Properties();
             config.put(StreamsConfig.APPLICATION_ID_CONFIG, "meld-" + System.currentTimeMillis());
-            //config.put(StreamsConfig.APPLICATION_ID_CONFIG, "meld");
             config.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, prop.getProperty(connectCluster + ".bootstrap_servers"));
             config.put("auto.offset.reset", "earliest");
             config.put("default.timestamp.extractor", WallclockTimestampExtractor.class);
@@ -102,7 +102,7 @@ public class ConnectController {
             offsetsStream.foreach(new ForeachAction<String, String>() {
                 public void apply(String key, String value) {
                     try {
-                        offsets.get(connectCluster).put(key, value);
+                        offsetsMap.get(connectCluster).put(key, value);
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
@@ -114,10 +114,47 @@ public class ConnectController {
             configsStream.foreach(new ForeachAction<String, String>() {
                 public void apply(String key, String value) {
                     try {
-                        configs.get(connectCluster).put(key, value);
-                        /*if (prop.containsKey("slack.webhook") && key.startsWith("connector-")) {
-                            sendSlackMessage("*" + key.substring(10) + "* has been updated on `" + connectCluster + "`:```" + value + "```");
-                        }*/
+                        configsMap.get(connectCluster).put(key, value);
+                        
+                        //---TEMP---
+                        try {
+                            //keep tablesByCluster up to date
+                            if(key != null && key.startsWith("connector-") && value != null && value.contains("JdbcSourceConnector")) {
+                                JsonNode json = new ObjectMapper().readTree(value);
+                                ObjectNode obj = (ObjectNode) json.get("properties");
+                                String connectionUrl = obj.get("connection.url").asText();
+                                if (clusterToServerToDatabaseToConnector.get(connectCluster)== null) {
+                                    clusterToServerToDatabaseToConnector.put(connectCluster, new HashMap<String, HashMap<String, HashMap<String, HashMap<String, String>>>>());
+                                }
+                                Pattern serverPattern = Pattern.compile("(?<=://)(.*?)(?=;)");
+                                Matcher serverMatcher = serverPattern.matcher(connectionUrl);
+                                if (serverMatcher.find()) {
+                                    String databaseServer = serverMatcher.group(0);
+                                    if (clusterToServerToDatabaseToConnector.get(connectCluster).get(databaseServer)== null) {
+                                        clusterToServerToDatabaseToConnector.get(connectCluster).put(databaseServer, new HashMap<String, HashMap<String, HashMap<String, String>>>());
+                                    }
+                                    Pattern databasePattern = Pattern.compile("(?<=databaseName=)(.*?)(?=;)");
+                                    Matcher databaseMatcher = databasePattern.matcher(connectionUrl);
+                                    if (databaseMatcher.find()) {
+                                        String database = databaseMatcher.group(0);
+                                        if (clusterToServerToDatabaseToConnector.get(connectCluster).get(databaseServer).get(database)== null) {
+                                            clusterToServerToDatabaseToConnector.get(connectCluster).get(databaseServer).put(database, new HashMap<String, HashMap<String, String>>());
+                                        }
+                                        HashMap<String, String> connectorDetails = new HashMap<String, String>();
+                                        connectorDetails.put("mode", obj.get("mode").asText());
+                                        if (obj.get("query") != null) {
+                                            connectorDetails.put("query", obj.get("query").asText().replaceAll("( )+", " "));
+                                        } else if (obj.get("table.whitelist") != null) {
+                                            connectorDetails.put("table.whitelist", obj.get("table.whitelist").asText());
+                                        }
+                                        clusterToServerToDatabaseToConnector.get(connectCluster).get(databaseServer).get(database).put(key.substring(10), connectorDetails);
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                        //---/TEMP---
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
@@ -126,21 +163,21 @@ public class ConnectController {
             
             // keep status caches up to date
             KStream<String, String> statusesStream = builder.stream(prop.getProperty(connectCluster + ".status"));
+            
             statusesStream.foreach(new ForeachAction<String, String>() {
                 public void apply(String key, String value) {
                     try {
                         if (value != null && !value.contains("UNASSIGNED") && key.startsWith("status-connector-")) {
-                            if (!statuses.get(connectCluster).containsKey(key.substring(17))) {
-                                statuses.get(connectCluster).put(key.substring(17), new HashMap<String,String>());
+                            if (!statusesMap.get(connectCluster).containsKey(key.substring(17))) {
+                                statusesMap.get(connectCluster).put(key.substring(17), new HashMap<String,String>());
                             }
-                            statuses.get(connectCluster).get(key.substring(17)).put("connector", value);
+                            statusesMap.get(connectCluster).get(key.substring(17)).put("connector", value);
                         } else if (value != null && !value.contains("UNASSIGNED") && key.startsWith("status-task-")) {
                             String connectorName = key.substring(12).replaceAll("-[0-9]*$", "");
-                            System.out.println("key: " + key +"\tconnName: "+connectorName);
-                            if (!statuses.get(connectCluster).containsKey(connectorName)) {
-                                statuses.get(connectCluster).put(connectorName, new HashMap<String,String>());
+                            if (!statusesMap.get(connectCluster).containsKey(connectorName)) {
+                                statusesMap.get(connectCluster).put(connectorName, new HashMap<String,String>());
                             }
-                            statuses.get(connectCluster).get(connectorName).put(key.substring(12).replace(connectorName, "task"), value);
+                            statusesMap.get(connectCluster).get(connectorName).put(key.substring(12).replace(connectorName, "task"), value);
                         }
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -149,12 +186,26 @@ public class ConnectController {
             });
 
             // start Kafka Streams
+            @SuppressWarnings("resource")
             final KafkaStreams streams = new KafkaStreams(builder.build(), config);
             streams.cleanUp();
             streams.start();
         }
     }
 
+    //temp
+    @GET
+    @Path("/db")
+    public Response getDb() throws IOException {
+        return Response.ok(clusterToServerToDatabaseToConnector).build();
+    }
+
+    @GET
+    @Path("/configs")
+    public Response getAllConfigs() throws IOException {
+        return Response.ok(configsMap).build();
+    }
+    
     @GET
     public Response getClusters() {
         return Response.ok(connectClusters).build();
@@ -180,20 +231,20 @@ public class ConnectController {
     @GET
     @Path("/statuses")
     public Response getStatuses() throws IOException {
-        return Response.ok(statuses).build();
+        return Response.ok(statusesMap).build();
     }
 
     @GET
     @Path("/statuses/{cluster}")
     public Response getStatusesCluster(@PathParam("cluster") String cluster) throws IOException {
-        return Response.ok(statuses.get(cluster)).build();
+        return Response.ok(statusesMap.get(cluster)).build();
     }
 
     @GET
     @Path("/{cluster}/status")
     public Response getClusterStatus(@PathParam("cluster") String cluster) throws IOException {
         try {
-            return Response.ok(statuses.get(cluster).entrySet().stream().filter(e -> {
+            return Response.ok(statusesMap.get(cluster).entrySet().stream().filter(e -> {
                 return e.getValue() != null;
             }).collect(Collectors.toMap(e-> e.getKey(), e-> e.getValue()))).build();
         } catch (NullPointerException npe) {
@@ -201,25 +252,12 @@ public class ConnectController {
         }
     }
 
-    /*
-    @GET
-    @Path("/{cluster}/status/running")
-    public Response getClusterStatusRunning(@PathParam("cluster") String cluster, @PathParam("status") String status) throws IOException {
-        try {
-            return Response.ok(statuses.get(cluster).entrySet().stream().filter(e -> {
-                return e.getValue() != null && e.getValue().contains("RUNNING");
-            }).collect(Collectors.toMap(e-> e.getKey(), e-> e.getValue()))).build();
-        } catch (NullPointerException npe) {
-            return Response.ok("Error: [" + cluster + "] is not a valid Connect cluster.").build();
-        }
-    }*/
-    
     @GET
     @Path("/statuses/failed")
     public Response getAllStatusFailed(@PathParam("cluster") String cluster, @PathParam("status") String status)
             throws IOException {
         HashMap<String, HashMap<String, HashMap<String, String>>> outerHashmap = new HashMap<String, HashMap<String, HashMap<String, String>>>();
-        statuses.entrySet().stream().forEach(n -> {
+        statusesMap.entrySet().stream().forEach(n -> {
             HashMap<String, HashMap<String, String>> innerHashmap = new HashMap<String, HashMap<String, String>>();
             innerHashmap.putAll(n.getValue().entrySet().stream().filter(e -> {
                 return e.getValue() != null && e.getValue().toString().contains("FAILED");
@@ -235,7 +273,7 @@ public class ConnectController {
     @Path("/{cluster}/status/failed")
     public Response getClusterStatusFailed(@PathParam("cluster") String cluster, @PathParam("status") String status) throws IOException {
         try {
-            return Response.ok(statuses.get(cluster).entrySet().stream().filter(e -> {
+            return Response.ok(statusesMap.get(cluster).entrySet().stream().filter(e -> {
                 return e.getValue() != null && e.getValue().toString().contains("FAILED");
             }).collect(Collectors.toMap(e-> e.getKey(), e-> e.getValue()))).build();
         } catch (NullPointerException npe) {
@@ -248,7 +286,7 @@ public class ConnectController {
     @Path("/{cluster}/connectors")
     public Response getConnectors(@PathParam("cluster") String cluster) throws IOException {
         try {
-            Stream<Object> connectors = configs.get(cluster).entrySet().stream().filter(e -> e.getKey().startsWith("connector-") && e.getValue() != null)
+            Stream<Object> connectors = configsMap.get(cluster).entrySet().stream().filter(e -> e.getKey().startsWith("connector-") && e.getValue() != null)
                     .map(e -> e.getKey().substring(10));
             return Response.ok(connectors).build();
         } catch (NullPointerException npe) {
@@ -260,7 +298,7 @@ public class ConnectController {
     @Path("/{cluster}/connectors/{connector}")
     public Response getConnector(@PathParam("cluster") String cluster, @PathParam("connector") String connector)
             throws IOException {
-        String properties = configs.get(cluster).get("connector-" + connector);
+        String properties = configsMap.get(cluster).get("connector-" + connector);
         if (properties == null) {
             return Response
                     .ok("Error: Connector [" + connector + "] does not exist on Connect cluster [" + cluster + "].")
@@ -273,7 +311,7 @@ public class ConnectController {
     @Path("/{cluster}/connectors/{connector}/config")
     public Response getConnectorConfig(@PathParam("cluster") String cluster, @PathParam("connector") String connector)
             throws IOException {
-        String properties = configs.get(cluster).get("connector-" + connector);
+        String properties = configsMap.get(cluster).get("connector-" + connector);
         if (properties == null) {
             return Response
                     .ok("Error: Connector [" + connector + "] does not exist on Connect cluster [" + cluster + "].")
@@ -287,7 +325,7 @@ public class ConnectController {
     public Response getOffsets(@PathParam("cluster") String cluster, @PathParam("connector") String connector)
             throws IOException {
         return Response
-                .ok(offsets.get(cluster))
+                .ok(offsetsMap.get(cluster))
                 .build();
     }
 
@@ -295,9 +333,9 @@ public class ConnectController {
     @Path("/{cluster}/offsets/{connector}")
     public Response getOffsetsConnector(@PathParam("cluster") String cluster, @PathParam("connector") String connector)
             throws IOException {
-        return Response
-                .ok(offsets.get(cluster).entrySet().stream().filter(s -> s.getKey().contains(connector)).collect(
-                        Collectors.toMap(e -> e.getKey().substring(e.getKey().indexOf(",") + 1), e -> e.getValue())))
+        return Response.ok(offsetsMap.get(cluster).entrySet().stream()
+                .filter(s -> s.getKey().matches("\\[\"" + connector + "\",.*\\]"))
+                .collect(Collectors.toMap(e -> e.getKey().substring(e.getKey().indexOf(",") + 1), e -> e.getValue())))
                 .build();
     }
 
@@ -305,8 +343,8 @@ public class ConnectController {
     @Path("/{cluster}/offsets/{connector}/{offsetKey}")
     public Response getOffsetKey(@PathParam("cluster") String cluster, @PathParam("connector") String connector,
             @PathParam("offsetKey") String offsetKey) throws IOException {
-        return Response.ok(offsets.get(cluster).entrySet().stream()
-                .filter(s -> s.getKey().contains(connector) && s.getKey().contains(offsetKey))
+        return Response.ok(offsetsMap.get(cluster).entrySet().stream()
+                .filter(s -> s.getKey().matches("\\[\"" + connector + "\",.*\\]") && s.getKey().contains(offsetKey))
                 .collect(Collectors.toMap(e -> e.getKey().substring(e.getKey().indexOf(",") + 1), e -> e.getValue())))
                 .build();
     }
@@ -323,8 +361,8 @@ public class ConnectController {
         props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         KafkaProducer<String, String> producer = new KafkaProducer<String, String>(props);
 
-        offsets.get(cluster).entrySet().stream()
-                .filter(s -> s.getKey().contains(connector) && s.getKey().contains(offsetKey)).forEach(e -> {
+        offsetsMap.get(cluster).entrySet().stream()
+                .filter(s -> s.getKey().matches("\\[\"" + connector + "\",.*\\]") && s.getKey().contains(offsetKey)).forEach(e -> {
                     ProducerRecord<String, String> record = new ProducerRecord<String, String>(
                             prop.getProperty(cluster + ".offset"), e.getKey(),
                             e.getValue().replaceAll(":[0-9]*", ":" + offset));
@@ -347,7 +385,7 @@ public class ConnectController {
     public Response getExport(@PathParam("cluster") String cluster) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         ZipOutputStream zos = new ZipOutputStream(baos);
-        for (Entry<String, String> e : configs.get(cluster).entrySet()) {
+        for (Entry<String, String> e : configsMap.get(cluster).entrySet()) {
             if (e.getKey().startsWith("connector-") && e.getValue() != null) {
                 ZipEntry entry = new ZipEntry(e.getKey().substring(10) + ".json");
                 zos.putNextEntry(entry);
